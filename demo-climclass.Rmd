@@ -1,0 +1,199 @@
+---
+title: "Demo 1 — ClimClass: clasificación climática y balance hídrico"
+author: "El tali"
+date: "`r format(Sys.Date(), '%Y-%m-%d')`"
+output:
+  bookdown::github_document2:
+    number_sections: false
+    fig_caption: yes
+    toc: true
+    toc_depth: 4
+    fig_width: 8
+    fig_height: 5
+  bookdown::html_document2:
+    number_sections: false
+    code_folding: hide
+    fig_caption: yes
+    md_extensions: "-fancy_lists"
+    css: estilos.css
+    toc: true
+    toc_depth: 4
+    fig_width: 8
+    fig_height: 5
+editor_options: 
+  chunk_output_type: console
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.align = "center", fig.retina = 2)
+set.seed(42)
+```
+
+# Objetivo y flujo lógico
+
+Este cuaderno muestra un **flujo reproducible** con [`ClimClass`](https://cran.r-project.org/web/packages/ClimClass/index.html):
+
+1. **Datos de ejemplo** incluidos en el paquete: estructura y formato requeridos.
+2. Cálculo de **normales climáticas** (mensuales) a partir de series.
+3. **Clasificación** climática (Köppen–Geiger), **índices de aridez** y **continentalidad**.
+4. **Balance hídrico** de Thornthwaite–Mather y gráficos estándar (Bagnouls–Gaussen, Peguy, cuantiles WB).
+5. **Interpretación biogeográfica**: implicaciones para la distribución de plantas.
+
+> Todo el código es visible. No se descarga nada: se usan **datos de ejemplo** que trae el paquete.
+
+# Paquetes
+
+```{r packages}
+# Instala ClimClass si hace falta
+if (!requireNamespace("ClimClass", quietly = TRUE)) install.packages("ClimClass")
+# Otros paquetes útiles
+for (p in c("ClimClass","dplyr","tidyr","ggplot2","stringr")) {
+  if (!requireNamespace(p, quietly = TRUE)) install.packages(p)
+  library(p, character.only = TRUE)
+}
+```
+
+# Datos de ejemplo de `ClimClass`
+
+`ClimClass` incluye un conjunto de objetos de ejemplo bajo el nombre `Trent_climate`.
+
+```{r load-data}
+# Carga todos los objetos del dataset de ejemplo
+data("Trent_climate", package = "ClimClass")
+# Objetos esperados (puede variar según versión)
+expected <- c("lista_cli","clima_81_10","coord_elev","arid_ind_tables",
+              "continental_ind_tables","coeff_rad","quantiles","thornt_lst")
+available <- intersect(expected, ls())
+cat("Objetos disponibles:\n\n")
+print(available)
+```
+
+Cada elemento de `lista_cli` es una **serie mensual** con columnas típicas:
+- `year`, `month`, `P` (precipitación), `Tn`, `Tx` y opcionalmente `Tm` (temperatura media).
+
+Elegimos una estación para la demo:
+
+```{r pick-station}
+# Nombres de estaciones
+sta_names <- names(lista_cli)
+sta <- sta_names[1]         # <- cambia si quieres otra
+series <- lista_cli[[sta]]
+# Vista rápida de la serie
+head(series)
+```
+
+# Normales climáticas (1981–2010)
+
+```{r climate-normals}
+clim_norm <- climate(series, first.yr = 1981, last.yr = 2010, max.perc.missing = 15)
+clim_norm
+```
+
+# Clasificaciones e índices
+
+## Köppen–Geiger
+
+```{r koppen}
+kg <- koeppen_geiger(clim_norm, A_B_C_special_sub.classes = TRUE)
+kg
+```
+
+## Índices de aridez
+
+Para los índices basados en radiación (p. ej. **Thornthwaite Im**), se usan coeficientes de **radiación extra-atmosférica** (`ExAtRa`).
+
+```{r aridity}
+# Coordenadas/altura de la estación (asumiendo el mismo orden que en los datos)
+idx <- which(names(lista_cli) == sta)
+latitude <- if ("coord_elev" %in% ls()) coord_elev$North[idx] else 46
+# Día del año de los días 15 de cada mes (12 valores)
+mid <- as.Date(sprintf("2014-%02d-15", 1:12))
+doy <- as.integer(strftime(mid, "%j"))
+coeff_rad <- ExAtRa(DOY = doy, latitude = latitude, unit = "mm")
+
+# Índices de aridez (anuales y mensuales)
+arid_ann <- arid(clim_norm, coeff_rad = coeff_rad, monthly = FALSE)
+arid_mon <- arid(clim_norm, coeff_rad = coeff_rad, monthly = TRUE)
+
+arid_ann
+head(arid_mon)
+```
+
+## Índices de continentalidad/oceanicidad
+
+```{r continentality}
+# Elevación si está disponible
+elev <- if ("coord_elev" %in% ls()) coord_elev$Elevation[idx] else NA
+cont <- contin(clim_norm, latitude = latitude, elevation = elev, Michalet_correction = TRUE)
+cont
+```
+
+# Gráficos climáticos estándar
+
+## Bagnouls–Gaussen
+
+```{r bagn-gau, fig.height=5}
+bagn_gau(clim_norm_sta = clim_norm, main_title = paste(sta, "(1981–2010)"))
+```
+
+## Peguy
+
+```{r peguy, fig.height=5}
+peguy(data = clim_norm, xlab = "Mes", ylab = "Valor")
+```
+
+# Balance hídrico (Thornthwaite–Mather)
+
+La función `thornthwaite()` calcula el balance mensual (**P, Et0, Storage, P−Et0, Deficit, Surplus**) y, opcionalmente, cuantiles climatológicos. Por claridad usamos la **serie mensual** original y las **normales** calculadas.
+
+```{r wb}
+wb <- thornthwaite(series = series,
+                   clim_norm = clim_norm,
+                   quant = c(0, .1, .25, .5, .75, .9, 1),
+                   snow.init = 20, Tsnow = -1,
+                   TAW = 100,
+                   latitude = 46)
+# La lista de cuantiles suele estar en el segundo elemento del resultado
+q_list <- tryCatch(wb[[2]], error = function(e) NULL)
+if (!is.null(q_list)) {
+  class(q_list) <- "thornthwaite"
+  plot(q_list, variables = c("Precipitation","Et0","Storage","Prec. - Evap.","Deficit","Surplus"),
+       st_name = paste(sta, "(cuantiles 12 meses)"))
+}
+```
+
+Extraemos una tabla mensual de **déficit** y **superávit** (si la estructura está disponible):
+
+```{r wb-table}
+# Intento de extraer tablas de balance (la estructura puede variar según versión del paquete)
+wb_tables <- try(names(wb), silent = TRUE)
+if (!inherits(wb_tables, "try-error")) print(wb_tables)
+
+# Si el primer elemento contiene las series mensuales, lo mostramos
+wb_mensual <- try(wb[[1]], silent = TRUE)
+if (!inherits(wb_mensual, "try-error")) {
+  # Esperamos columnas como: Precipitation, Et0, Storage, Prec. - Evap., Deficit, Surplus
+  print(head(wb_mensual))
+}
+```
+
+# Interpretación biogeográfica (guion)
+
+- **Meses con déficit** hídrico (\(P < E\!t_0\)) reducen la **productividad primaria** y favorecen **estrategias xeromorfas** (hojas pequeñas, cutículas gruesas).  
+- La **amplitud térmica** (continentalidad) y la estacionalidad de lluvias delimitan **biomas potenciales** (p. ej., bosques templados vs. sabanas).  
+- Los climogramas **Bagnouls–Gaussen** ayudan a identificar periodos **secos** (cuando \(P < 2T\)).  
+- El balance de Thornthwaite–Mather provee **almacenamiento de suelo, superávit y déficit**: útil para inferir **fenología** (floración, latencia) y **riesgo de incendios**.
+
+# Adaptación del flujo a tus datos
+
+1. Sustituye `series` por tu propia serie mensual con columnas: `year`, `month`, `P`, `Tn`, `Tx` (y opcional `Tm`).  
+2. Genera `clim_norm` con `climate()` (periodo de 30 años recomendado).  
+3. Calcula **Köppen–Geiger**, **aridez** y **continentalidad**; luego **balance hídrico** con tu `TAW` (capacidad de almacenamiento del suelo) y latitud local.  
+4. Usa `plot()` sobre la lista de cuantiles (clase `thornthwaite`) para los gráficos multivariables.
+
+# Sesión
+
+```{r}
+sessionInfo()
